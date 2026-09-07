@@ -1,4 +1,4 @@
-import asyncio, base64, contextlib, json, os, secrets, logging, time
+import asyncio, base64, contextlib, json, os, secrets, logging, time, re
 from urllib.parse import quote
 import httpx, websockets
 from fastapi import FastAPI, WebSocket
@@ -38,7 +38,7 @@ class Offer(BaseModel):
 async def health():
     from fastapi.responses import JSONResponse
     ready = all(env(k) for k in ('OPENAI_API_KEY','TWILIO_AUTH_TOKEN','PUBLIC_BASE_URL','SITE_URL','VOICE_BRIDGE_SECRET'))
-    return JSONResponse({'ready':ready, 'version':'2026-09-08-farewell-fix', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
+    return JSONResponse({'ready':ready, 'version':'2026-09-08-completion-check', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
 
 class RemoteStore:
     def __init__(self, key, sid, client):
@@ -67,7 +67,7 @@ Pending oznacza: brak zgody. Powiedz, że musisz uzyskać decyzję właściciela
 Nie płać, nie podawaj haseł, kodów ani danych płatniczych. Nie zawieraj kredytów, umów ubezpieczeniowych ani pełnomocnictw.
 Na odmowę rozmowy z AI uprzejmie zakończ. Jeżeli potrzebna jest klawiatura IVR, zapisz ograniczenie i zakończ.
 Zapisuj istotne ustalenia narzędziem save_note, rozróżniając propozycję od potwierdzonej rezerwacji.
-Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Na koniec użyj finish z podsumowaniem, wynikiem i następnym krokiem. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
+Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Przed zakończeniem po udzieleniu pełnej odpowiedzi zapytaj krótko, czy wątek został wyjaśniony, i poczekaj na odpowiedź rozmówcy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Na koniec użyj finish z podsumowaniem, wynikiem i następnym krokiem. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
     string = {'type': 'string'}
     return {'type': 'session.update', 'session': {'type': 'realtime',
         'model': os.getenv('OPENAI_REALTIME_MODEL', 'gpt-realtime-2.1'),
@@ -78,7 +78,7 @@ Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz mer
             {'type': 'function', 'name': 'ask_owner', 'description': 'Zadaj właścicielowi pytanie w jego panelu podczas rozmowy.', 'parameters': {'type':'object','properties':{'question':string},'required':['question'],'additionalProperties':False}},
             {'type': 'function', 'name': 'check_offer', 'description': 'Sprawdź zgodę na dokładną propozycję przed jej przyjęciem.', 'parameters': Offer.model_json_schema()},
             {'type': 'function', 'name': 'save_note', 'description': 'Zapisz istotne ustalenie.', 'parameters': {'type': 'object', 'properties': {'note': string}, 'required': ['note'], 'additionalProperties': False}},
-            {'type': 'function', 'name': 'finish', 'description': 'Zapisz podsumowanie i zakończ rozmowę.', 'parameters': {'type': 'object', 'properties': {'summary': string, 'outcome': {'type': 'string', 'enum': ['resolved', 'needs_owner', 'unresolved']}, 'next_step': string}, 'required': ['summary', 'outcome', 'next_step'], 'additionalProperties': False}}
+            {'type': 'function', 'name': 'finish', 'description': 'Zapisz podsumowanie i zakończ rozmowę.', 'parameters': {'type': 'object', 'properties': {'confirmed_by_caller': {'type':'boolean'}, 'summary': string, 'outcome': {'type': 'string', 'enum': ['resolved', 'needs_owner', 'unresolved']}, 'next_step': string}, 'required': ['summary', 'outcome', 'next_step', 'confirmed_by_caller'], 'additionalProperties': False}}
         ], 'tool_choice': 'auto'}}
 
 
@@ -90,6 +90,7 @@ async def media(ws: WebSocket, key: str):
         return
     await ws.accept()
     store = None
+    open_task = None
     client = httpx.AsyncClient(timeout=10)
     try:
         async def receive_start():
@@ -101,9 +102,10 @@ async def media(ws: WebSocket, key: str):
         data = start['start']
         sid = data['streamSid']
         store = RemoteStore(key, data['callSid'], client)
-        case = await store.call('open',token=data.get('customParameters',{}).get('token',''))
+        # Fetch authorized case context while the independent voice handshake runs.
+        open_task = asyncio.create_task(store.call('open',token=data.get('customParameters',{}).get('token','')))
         state = {'last_item': None, 'sent_ms': 0, 'played_ms': 0, 'marks': {}, 'finish': False, 'responding': False, 'tool_pending': False,
-                 'awaiting_farewell': False, 'farewell_response_id': None, 'finish_mark': None, 'user_speaking': False, 'started': False, 'user_started': False, 'response_id': None, 'audio_response_id': None, 'interrupted': set()}
+                 'finish_check_turn': None, 'completion_check': False, 'user_turns': 0, 'latest_user_text': '', 'awaiting_farewell': False, 'farewell_response_id': None, 'finish_mark': None, 'user_speaking': False, 'started': False, 'user_started': False, 'response_id': None, 'audio_response_id': None, 'interrupted': set()}
         outbox = asyncio.Queue()
         item_times = {}
         interrupted_items = set()
@@ -122,15 +124,19 @@ async def media(ws: WebSocket, key: str):
                 if state['finish']:
                     state['awaiting_farewell'] = True
                     await send({'type':'response.create','response':{'tool_choice':'none','instructions':'Pożegnaj się teraz uprzejmie jednym krótkim zdaniem. Nie wywołuj narzędzi.'}})
+                elif state['completion_check']:
+                    state['completion_check'] = False
+                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':session(case)['session']['instructions']+'\nTERAZ: Dokończ merytorycznie ostatni wątek, nie zapowiadaj odpowiedzi. Następnie zapytaj krótko, czy wszystko jest wyjaśnione, i zaczekaj. Nie żegnaj się.'}})
                 else:
                     await send({'type':'response.create'})
 
+            case = await open_task
             await send(session(case))
 
             async def initial_greeting():
                 await ready.wait()
                 # Let buffered "halo" reach VAD before scheduling a second response.
-                await asyncio.sleep(0.6)
+                await asyncio.sleep(0.15)
                 if not state['started'] and not state['user_started']:
                     state['started'] = True
                     state['responding'] = True
@@ -197,6 +203,7 @@ async def media(ws: WebSocket, key: str):
                         item = event.get('item', {})
                         item_times.setdefault(item.get('id'), round((time.monotonic()-started_at)*1000))
                     elif kind == 'conversation.item.input_audio_transcription.completed':
+                        state['latest_user_text'] = event.get('transcript','')
                         record('transcript', {'speaker':'recipient','text':event.get('transcript',''), 'item_id':event.get('item_id'), 'offset_ms':item_times.get(event.get('item_id'),round((time.monotonic()-started_at)*1000))})
                     elif kind == 'conversation.item.input_audio_transcription.failed':
                         record('transcript_error', {'note':'Nie udało się zapisać fragmentu wypowiedzi rozmówcy.'})
@@ -204,6 +211,7 @@ async def media(ws: WebSocket, key: str):
                         record('transcript', {'speaker':'agent','text':event.get('transcript',''), 'item_id':event.get('item_id'), 'interrupted':event.get('item_id') in interrupted_items, 'offset_ms':item_times.get(event.get('item_id'),round((time.monotonic()-started_at)*1000))})
                     elif kind == 'input_audio_buffer.speech_stopped':
                         state['user_speaking'] = False
+                        state['user_turns'] += 1
                     elif kind == 'response.output_audio.delta':
                         if event.get('response_id') in state['interrupted']:
                             continue
@@ -245,9 +253,16 @@ async def media(ws: WebSocket, key: str):
                                 await store.event(key, 'note', {'note': str(args['note'])[:4000]})
                                 result = {'saved': True}
                             elif event['name'] == 'finish':
-                                await store.event(key, 'summary', {k: str(args[k])[:4000] for k in ('summary', 'outcome', 'next_step')})
-                                state['finish'] = True
-                                result = {'saved': True, 'instruction': 'Pożegnaj się teraz jednym zdaniem.'}
+                                caller_ends = bool(re.search(r'do widzenia|rozłącz|rozlacz|kończymy|konczymy|nie chcę rozmawiać|nie chce rozmawiac|zakończ rozmowę|zakoncz rozmowe',state['latest_user_text'],re.I))
+                                checked = state['finish_check_turn'] is not None and state['user_turns'] > state['finish_check_turn'] and args.get('confirmed_by_caller') is True
+                                if not caller_ends and not checked:
+                                    state['finish_check_turn'] = state['user_turns']
+                                    state['completion_check'] = True
+                                    result = {'saved':False,'status':'continue_conversation','instruction':'Nie zakończono i nie zapisano podsumowania. Najpierw wypowiedz brakującą odpowiedź. Zapytaj, czy wątek jest wyjaśniony, i poczekaj na nową odpowiedź rozmówcy.'}
+                                else:
+                                    await store.event(key, 'summary', {k: str(args[k])[:4000] for k in ('summary', 'outcome', 'next_step')})
+                                    state['finish'] = True
+                                    result = {'saved': True, 'instruction': 'Pożegnaj się teraz jednym zdaniem.'}
                             else:
                                 result = {'error': 'unknown_tool'}
                         except (ValueError, KeyError, TypeError):
@@ -306,6 +321,9 @@ async def media(ws: WebSocket, key: str):
             with contextlib.suppress(Exception):
                 await store.event(key, 'stream_ended', {'type': type(exc).__name__})
     finally:
+        if open_task is not None:
+            if not open_task.done(): open_task.cancel()
+            await asyncio.gather(open_task,return_exceptions=True)
         await client.aclose()
         with contextlib.suppress(Exception):
             await ws.close()
