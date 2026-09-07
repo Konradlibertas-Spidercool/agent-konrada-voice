@@ -38,7 +38,7 @@ class Offer(BaseModel):
 async def health():
     from fastapi.responses import JSONResponse
     ready = all(env(k) for k in ('OPENAI_API_KEY','TWILIO_AUTH_TOKEN','PUBLIC_BASE_URL','SITE_URL','VOICE_BRIDGE_SECRET'))
-    return JSONResponse({'ready':ready, 'version':'2026-09-08-cases-v2', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
+    return JSONResponse({'ready':ready, 'version':'2026-09-08-farewell-fix', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
 
 class RemoteStore:
     def __init__(self, key, sid, client):
@@ -67,7 +67,7 @@ Pending oznacza: brak zgody. Powiedz, że musisz uzyskać decyzję właściciela
 Nie płać, nie podawaj haseł, kodów ani danych płatniczych. Nie zawieraj kredytów, umów ubezpieczeniowych ani pełnomocnictw.
 Na odmowę rozmowy z AI uprzejmie zakończ. Jeżeli potrzebna jest klawiatura IVR, zapisz ograniczenie i zakończ.
 Zapisuj istotne ustalenia narzędziem save_note, rozróżniając propozycję od potwierdzonej rezerwacji.
-Na koniec użyj finish z podsumowaniem, wynikiem i następnym krokiem. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
+Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Na koniec użyj finish z podsumowaniem, wynikiem i następnym krokiem. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
     string = {'type': 'string'}
     return {'type': 'session.update', 'session': {'type': 'realtime',
         'model': os.getenv('OPENAI_REALTIME_MODEL', 'gpt-realtime-2.1'),
@@ -103,7 +103,7 @@ async def media(ws: WebSocket, key: str):
         store = RemoteStore(key, data['callSid'], client)
         case = await store.call('open',token=data.get('customParameters',{}).get('token',''))
         state = {'last_item': None, 'sent_ms': 0, 'played_ms': 0, 'marks': {}, 'finish': False, 'responding': False, 'tool_pending': False,
-                 'user_speaking': False, 'started': False, 'user_started': False, 'response_id': None, 'audio_response_id': None, 'interrupted': set()}
+                 'awaiting_farewell': False, 'farewell_response_id': None, 'finish_mark': None, 'user_speaking': False, 'started': False, 'user_started': False, 'response_id': None, 'audio_response_id': None, 'interrupted': set()}
         outbox = asyncio.Queue()
         item_times = {}
         interrupted_items = set()
@@ -116,6 +116,14 @@ async def media(ws: WebSocket, key: str):
                                       additional_headers={'Authorization': 'Bearer ' + env('OPENAI_API_KEY')}, max_size=2**22, open_timeout=15) as ai:
             async def send(value):
                 await ai.send(json.dumps(value))
+
+            async def request_tool_reply():
+                state['responding'] = True
+                if state['finish']:
+                    state['awaiting_farewell'] = True
+                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':'Pożegnaj się teraz uprzejmie jednym krótkim zdaniem. Nie wywołuj narzędzi.'}})
+                else:
+                    await send({'type':'response.create'})
 
             await send(session(case))
 
@@ -162,7 +170,7 @@ async def media(ws: WebSocket, key: str):
                         await send({'type': 'input_audio_buffer.append', 'audio': event['media']['payload']})
                     if event['event'] == 'mark':
                         name = event['mark']['name']
-                        if name == 'finish':
+                        if state['finish_mark'] and name == state['finish_mark']:
                             return
                         mark = state['marks'].pop(name, None)
                         if mark and mark[0] == state['last_item']:
@@ -176,6 +184,9 @@ async def media(ws: WebSocket, key: str):
                         state['started'] = True
                         state['responding'] = True
                         state['response_id'] = event['response']['id']
+                        if state['awaiting_farewell']:
+                            state['farewell_response_id'] = state['response_id']
+                            state['awaiting_farewell'] = False
                         trace(kind, response_id=state['response_id'])
                     elif kind == 'session.updated':
                         ready.set()
@@ -206,6 +217,8 @@ async def media(ws: WebSocket, key: str):
                         state['marks'][name] = (state['last_item'], state['sent_ms'])
                         await ws.send_json({'event': 'mark', 'streamSid': sid, 'mark': {'name': name}})
                     elif kind == 'input_audio_buffer.speech_started':
+                        if state['finish']:
+                            state.update(finish=False, awaiting_farewell=False, farewell_response_id=None, finish_mark=None)
                         state['user_started'] = True
                         state['user_speaking'] = True
                         item_times.setdefault(event.get('item_id'),round((time.monotonic()-started_at)*1000))
@@ -243,17 +256,18 @@ async def media(ws: WebSocket, key: str):
                         if state['responding']:
                             state['tool_pending'] = True
                         else:
-                            await send({'type': 'response.create'})
+                            await request_tool_reply()
                     elif kind == 'response.done':
                         trace(kind, status=event.get('response', {}).get('status'))
                         state['responding'] = False
                         if state['tool_pending']:
                             state['tool_pending'] = False
-                            await send({'type':'response.create'})
-                        # The tool response itself can finish before the farewell begins.
+                            await request_tool_reply()
+                        # Only the dedicated farewell response may end playback.
                         output = event.get('response', {}).get('output', [])
-                        if state['finish'] and any(x.get('type') == 'message' for x in output):
-                            await ws.send_json({'event': 'mark', 'streamSid': sid, 'mark': {'name': 'finish'}})
+                        if state['finish'] and event.get('response',{}).get('id') == state['farewell_response_id'] and event.get('response',{}).get('status') == 'completed' and any(x.get('type') == 'message' for x in output):
+                            state['finish_mark'] = 'finish_'+secrets.token_hex(8)
+                            await ws.send_json({'event': 'mark', 'streamSid': sid, 'mark': {'name': state['finish_mark']}})
 
             async def owner_updates():
                 after = 0
