@@ -8,7 +8,7 @@ from twilio.request_validator import RequestValidator
 INTRO_TEXT = 'Dzień dobry, mam na imię Maja, jestem asystentką AI Konrada Kucharskiego i dzwonię w jego imieniu.'
 FAREWELL_INSTRUCTION = 'Powiedz wyłącznie: Dziękuję za rozmowę i życzę miłego dnia. Nie dodawaj żadnego wstępu ani innych słów. Nie wywołuj narzędzi.'
 INTRO_AUDIO = b''
-INTRO_DELAY_SECONDS = 1.0
+INTRO_DELAY_SECONDS = 0.0
 
 
 LANGUAGES = {'pl':'polski','en':'angielski','pt':'portugalski','es':'hiszpański','de':'niemiecki','fr':'francuski','it':'włoski','uk':'ukraiński'}
@@ -105,7 +105,7 @@ async def health():
     from fastapi.responses import JSONResponse
     ready = all(env(k) for k in ('OPENAI_API_KEY','TWILIO_AUTH_TOKEN','PUBLIC_BASE_URL','SITE_URL','VOICE_BRIDGE_SECRET'))
     ready = ready and bool(INTRO_AUDIO)
-    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-languages','languages_ready':(['pl'] if INTRO_AUDIO else [])+[c for c in INTRO_AUDIOS if c!='pl'], 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
+    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-immediate-intro','languages_ready':(['pl'] if INTRO_AUDIO else [])+[c for c in INTRO_AUDIOS if c!='pl'], 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
 
 class RemoteStore:
     def __init__(self, key, sid, client):
@@ -192,7 +192,8 @@ async def media(ws: WebSocket, key: str):
             audio = intro_audio(opening_case)
             if not audio: raise RuntimeError("language_intro_not_ready")
             await asyncio.sleep(max(0, INTRO_DELAY_SECONDS-(time.monotonic()-started_at)))
-            trace('intro_audio_started', target_ms=1000)
+            state['intro_started_ms'] = round((time.monotonic()-started_at)*1000)
+            trace('intro_audio_started', target_ms=round(INTRO_DELAY_SECONDS*1000))
             await ws.send_json({'event':'media','streamSid':sid,'media':{'payload':base64.b64encode(audio).decode()}})
             await ws.send_json({'event':'mark','streamSid':sid,'mark':{'name':state['opening_mark']}})
         intro_task = asyncio.create_task(play_intro())
@@ -255,7 +256,7 @@ async def media(ws: WebSocket, key: str):
                             await ready.wait()
                             state['opening'] = False
                             trace('intro_played')
-                            record('transcript', {'speaker':'agent','text':intro_text(case),'item_id':'cached_intro','offset_ms':1000})
+                            record('transcript', {'speaker':'agent','text':intro_text(case),'item_id':'cached_intro','offset_ms':state['intro_started_ms']})
                             await send({'type':'session.update','session':{'type':'realtime','audio':{'input':{'turn_detection':session(case)['session']['audio']['input']['turn_detection']}}}})
                             if not state['user_speaking']:
                                 state['responding'] = True
