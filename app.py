@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from twilio.request_validator import RequestValidator
 
 INTRO_TEXT = 'Dzień dobry, jestem asystentką AI Konrada Kucharskiego i dzwonię w jego imieniu.'
+FAREWELL_INSTRUCTION = 'Powiedz wyłącznie: Dziękuję za rozmowę i życzę miłego dnia. Nie dodawaj podsumowania ani zapowiedzi zamykania rozmowy lub wątku. Nie wywołuj narzędzi.'
 INTRO_AUDIO = b''
 INTRO_DELAY_SECONDS = 1.0
 
@@ -79,7 +80,7 @@ async def health():
     from fastapi.responses import JSONResponse
     ready = all(env(k) for k in ('OPENAI_API_KEY','TWILIO_AUTH_TOKEN','PUBLIC_BASE_URL','SITE_URL','VOICE_BRIDGE_SECRET'))
     ready = ready and bool(INTRO_AUDIO)
-    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-cached-intro', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
+    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-natural-farewell', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
 
 class RemoteStore:
     def __init__(self, key, sid, client):
@@ -108,7 +109,7 @@ Pending oznacza: brak zgody. Powiedz, że musisz uzyskać decyzję właściciela
 Nie płać, nie podawaj haseł, kodów ani danych płatniczych. Nie zawieraj kredytów, umów ubezpieczeniowych ani pełnomocnictw.
 Na odmowę rozmowy z AI uprzejmie zakończ. Jeżeli potrzebna jest klawiatura IVR, zapisz ograniczenie i zakończ.
 Zapisuj istotne ustalenia narzędziem save_note, rozróżniając propozycję od potwierdzonej rezerwacji.
-Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Przed zakończeniem po udzieleniu pełnej odpowiedzi zapytaj krótko, czy wątek został wyjaśniony, i poczekaj na odpowiedź rozmówcy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Na koniec użyj finish z podsumowaniem, wynikiem i następnym krokiem. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
+Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Przed zakończeniem po udzieleniu pełnej odpowiedzi zapytaj krótko, czy wątek został wyjaśniony, i poczekaj na odpowiedź rozmówcy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Podsumowanie, wynik i następny krok zapisz wyłącznie narzędziem finish, bez odczytywania ich rozmówcy i bez zapowiadania tej czynności. Nie mów „podsumuję rozmowę”, „zamknę rozmowę”, „zamknę wątek” ani podobnych sformułowań. Po zakończeniu sprawy podziękuj za rozmowę i życz miłego dnia. Pożegnanie zostanie zlecone po wyniku narzędzia finish; nie wypowiadaj go wcześniej, żeby nie powtarzać go dwa razy. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
     string = {'type': 'string'}
     return {'type': 'session.update', 'session': {'type': 'realtime',
         'model': os.getenv('OPENAI_REALTIME_MODEL', 'gpt-realtime-2.1'),
@@ -175,7 +176,7 @@ async def media(ws: WebSocket, key: str):
                 state['responding'] = True
                 if state['finish']:
                     state['awaiting_farewell'] = True
-                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':'Pożegnaj się teraz uprzejmie jednym krótkim zdaniem. Nie wywołuj narzędzi.'}})
+                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':FAREWELL_INSTRUCTION}})
                 elif state['completion_check']:
                     state['completion_check'] = False
                     await send({'type':'response.create','response':{'tool_choice':'none','instructions':session(case)['session']['instructions']+'\nTERAZ: Dokończ merytorycznie ostatni wątek, nie zapowiadaj odpowiedzi. Następnie zapytaj krótko, czy wszystko jest wyjaśnione, i zaczekaj. Nie żegnaj się.'}})
@@ -321,7 +322,7 @@ async def media(ws: WebSocket, key: str):
                                 else:
                                     await store.event(key, 'summary', {k: str(args[k])[:4000] for k in ('summary', 'outcome', 'next_step')})
                                     state['finish'] = True
-                                    result = {'saved': True, 'instruction': 'Pożegnaj się teraz jednym zdaniem.'}
+                                    result = {'saved': True, 'instruction': FAREWELL_INSTRUCTION}
                             else:
                                 result = {'error': 'unknown_tool'}
                         except (ValueError, KeyError, TypeError):
