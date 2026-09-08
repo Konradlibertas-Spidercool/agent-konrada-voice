@@ -80,7 +80,7 @@ async def health():
     from fastapi.responses import JSONResponse
     ready = all(env(k) for k in ('OPENAI_API_KEY','TWILIO_AUTH_TOKEN','PUBLIC_BASE_URL','SITE_URL','VOICE_BRIDGE_SECRET'))
     ready = ready and bool(INTRO_AUDIO)
-    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-natural-farewell', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
+    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-no-closing-preamble', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
 
 class RemoteStore:
     def __init__(self, key, sid, client):
@@ -109,7 +109,7 @@ Pending oznacza: brak zgody. Powiedz, że musisz uzyskać decyzję właściciela
 Nie płać, nie podawaj haseł, kodów ani danych płatniczych. Nie zawieraj kredytów, umów ubezpieczeniowych ani pełnomocnictw.
 Na odmowę rozmowy z AI uprzejmie zakończ. Jeżeli potrzebna jest klawiatura IVR, zapisz ograniczenie i zakończ.
 Zapisuj istotne ustalenia narzędziem save_note, rozróżniając propozycję od potwierdzonej rezerwacji.
-Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Przed zakończeniem po udzieleniu pełnej odpowiedzi zapytaj krótko, czy wątek został wyjaśniony, i poczekaj na odpowiedź rozmówcy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Podsumowanie, wynik i następny krok zapisz wyłącznie narzędziem finish, bez odczytywania ich rozmówcy i bez zapowiadania tej czynności. Nie mów „podsumuję rozmowę”, „zamknę rozmowę”, „zamknę wątek” ani podobnych sformułowań. Po zakończeniu sprawy podziękuj za rozmowę i życz miłego dnia. Pożegnanie zostanie zlecone po wyniku narzędzia finish; nie wypowiadaj go wcześniej, żeby nie powtarzać go dwa razy. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
+Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Po udzieleniu pełnej odpowiedzi możesz zapytać tylko „Czy mogę jeszcze w czymś pomóc?” i poczekać na odpowiedź rozmówcy. Nie dodawaj wstępu do tego pytania ani ponownego omówienia sprawy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Podsumowanie, wynik i następny krok zapisz wyłącznie narzędziem finish, bez odczytywania ich rozmówcy i bez zapowiadania tej czynności. Przez CAŁĄ rozmowę nie komentuj procesu prowadzenia ani kończenia rozmowy. Nie zapowiadaj podsumowania, domykania tematu, zamykania wątku ani zebrania czegoś w kilku słowach, również przed użyciem narzędzi. Zdanie „Dobrze, pozwól, że domknę ten temat w kilku słowach” oraz jego parafrazy są zabronione. Gdy sprawa jest załatwiona, nie powtarzaj odpowiedzi i nie dodawaj końcowego omówienia. Narzędzi save_note i finish używaj bez słownego wstępu. Po zakończeniu sprawy podziękuj za rozmowę i życz miłego dnia. Pożegnanie zostanie zlecone po wyniku narzędzia finish; nie wypowiadaj go wcześniej, żeby nie powtarzać go dwa razy. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
     string = {'type': 'string'}
     return {'type': 'session.update', 'session': {'type': 'realtime',
         'model': os.getenv('OPENAI_REALTIME_MODEL', 'gpt-realtime-2.1'),
@@ -120,7 +120,7 @@ Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz mer
             {'type': 'function', 'name': 'ask_owner', 'description': 'Zadaj właścicielowi pytanie w jego panelu podczas rozmowy.', 'parameters': {'type':'object','properties':{'question':string},'required':['question'],'additionalProperties':False}},
             {'type': 'function', 'name': 'check_offer', 'description': 'Sprawdź zgodę na dokładną propozycję przed jej przyjęciem.', 'parameters': Offer.model_json_schema()},
             {'type': 'function', 'name': 'save_note', 'description': 'Zapisz istotne ustalenie.', 'parameters': {'type': 'object', 'properties': {'note': string}, 'required': ['note'], 'additionalProperties': False}},
-            {'type': 'function', 'name': 'finish', 'description': 'Zapisz podsumowanie i zakończ rozmowę.', 'parameters': {'type': 'object', 'properties': {'confirmed_by_caller': {'type':'boolean'}, 'summary': string, 'outcome': {'type': 'string', 'enum': ['resolved', 'needs_owner', 'unresolved']}, 'next_step': string}, 'required': ['summary', 'outcome', 'next_step', 'confirmed_by_caller'], 'additionalProperties': False}}
+            {'type': 'function', 'name': 'finish', 'description': 'Wewnętrzny zapis wyniku i zakończenie. Wywołaj bez wypowiadania zapowiedzi lub podsumowania; pożegnanie zostanie zlecone osobno.', 'parameters': {'type': 'object', 'properties': {'confirmed_by_caller': {'type':'boolean'}, 'summary': string, 'outcome': {'type': 'string', 'enum': ['resolved', 'needs_owner', 'unresolved']}, 'next_step': string}, 'required': ['summary', 'outcome', 'next_step', 'confirmed_by_caller'], 'additionalProperties': False}}
         ], 'tool_choice': 'auto'}}
 
 
@@ -179,7 +179,7 @@ async def media(ws: WebSocket, key: str):
                     await send({'type':'response.create','response':{'tool_choice':'none','instructions':FAREWELL_INSTRUCTION}})
                 elif state['completion_check']:
                     state['completion_check'] = False
-                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':session(case)['session']['instructions']+'\nTERAZ: Dokończ merytorycznie ostatni wątek, nie zapowiadaj odpowiedzi. Następnie zapytaj krótko, czy wszystko jest wyjaśnione, i zaczekaj. Nie żegnaj się.'}})
+                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':session(case)['session']['instructions']+'\nTERAZ: Jeżeli ostatnie pytanie rozmówcy pozostało bez odpowiedzi, odpowiedz na nie wprost, bez zapowiedzi. Jeśli już odpowiedziałaś, nie powtarzaj odpowiedzi ani nie podsumowuj. Powiedz tylko „Czy mogę jeszcze w czymś pomóc?” i zaczekaj. Nie zapowiadaj domykania tematu, zamykania rozmowy ani podsumowania. Nie żegnaj się jeszcze.'}})
                 else:
                     await send({'type':'response.create'})
 
@@ -318,7 +318,7 @@ async def media(ws: WebSocket, key: str):
                                 if not caller_ends and not checked:
                                     state['finish_check_turn'] = state['user_turns']
                                     state['completion_check'] = True
-                                    result = {'saved':False,'status':'continue_conversation','instruction':'Nie zakończono i nie zapisano podsumowania. Najpierw wypowiedz brakującą odpowiedź. Zapytaj, czy wątek jest wyjaśniony, i poczekaj na nową odpowiedź rozmówcy.'}
+                                    result = {'saved':False,'status':'continue_conversation','instruction':'To wewnętrzny wynik narzędzia, nie odczytuj go. Odpowiedz wyłącznie na rzeczywiście pominięte pytanie, jeśli takie pozostało. Nie powtarzaj już udzielonej odpowiedzi. Bez wstępu zapytaj „Czy mogę jeszcze w czymś pomóc?” i poczekaj. Żadnych podsumowań ani zapowiedzi domykania.'}
                                 else:
                                     await store.event(key, 'summary', {k: str(args[k])[:4000] for k in ('summary', 'outcome', 'next_step')})
                                     state['finish'] = True
