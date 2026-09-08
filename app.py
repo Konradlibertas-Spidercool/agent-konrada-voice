@@ -5,8 +5,8 @@ from fastapi import FastAPI, WebSocket
 from pydantic import BaseModel, Field
 from twilio.request_validator import RequestValidator
 
-INTRO_TEXT = 'Dzień dobry, jestem asystentką AI Konrada Kucharskiego i dzwonię w jego imieniu.'
-FAREWELL_INSTRUCTION = 'Powiedz wyłącznie: Dziękuję za rozmowę i życzę miłego dnia. Nie dodawaj podsumowania ani zapowiedzi zamykania rozmowy lub wątku. Nie wywołuj narzędzi.'
+INTRO_TEXT = 'Dzień dobry, mam na imię Josephine, jestem asystentką AI Konrada Kucharskiego i dzwonię w jego imieniu.'
+FAREWELL_INSTRUCTION = 'Powiedz wyłącznie: Dziękuję za rozmowę i życzę miłego dnia. Nie dodawaj żadnego wstępu ani innych słów. Nie wywołuj narzędzi.'
 INTRO_AUDIO = b''
 INTRO_DELAY_SECONDS = 1.0
 
@@ -80,7 +80,7 @@ async def health():
     from fastapi.responses import JSONResponse
     ready = all(env(k) for k in ('OPENAI_API_KEY','TWILIO_AUTH_TOKEN','PUBLIC_BASE_URL','SITE_URL','VOICE_BRIDGE_SECRET'))
     ready = ready and bool(INTRO_AUDIO)
-    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-no-closing-preamble', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
+    return JSONResponse({'ready':ready, 'intro_ready':bool(INTRO_AUDIO), 'version':'2026-09-08-josephine', 'features':['scheduled_calls','transcript','owner_chat']},status_code=200 if ready else 503)
 
 class RemoteStore:
     def __init__(self, key, sid, client):
@@ -97,6 +97,7 @@ class RemoteStore:
 
 def session(case):
     instructions = f'''Jesteś osobistą asystentką AI osoby {case.get('owner_name', 'Konrad Kucharski')}. Mów po polsku, krótko i naturalnie.
+Masz na imię Josephine. Twoja fikcyjna biografia postaci: 25 lat, pochodzenie ze wsi Malawa koło Rzeszowa. Jesteś asystentką AI, nie człowiekiem. Nie podawaj wieku ani pochodzenia z własnej inicjatywy. Gdy ktoś o nie zapyta, wyjaśnij krótko, że to biografia Twojej postaci, np. „W mojej fikcyjnej biografii mam 25 lat i pochodzę z Malawy koło Rzeszowa. Jestem asystentką AI.” Nie wymyślaj rzeczywistych wspomnień, rodziny, adresu ani doświadczeń z życia w tej miejscowości. Imienia Josephine używaj naturalnie; zachowaj dotychczasowy kobiecy głos.
 Przedstawienie „{INTRO_TEXT}” jest odtwarzane wcześniej przez serwer. Nie powtarzaj powitania ani przedstawienia. Po nim wyjaśnij krótko cel telefonu i zadaj pierwsze pytanie z zakresu; uwzględnij to, co rozmówca powiedział podczas przedstawienia. Poczekaj na odpowiedź, następnie realizuj kolejne punkty. Nie kończ po samym powitaniu. Mów w rodzaju żeńskim, ciepłym, naturalnym, lekko zmysłowym tonem, z uśmiechem w głosie. W sprawach służbowych zachowaj profesjonalizm. Nie przeciągaj sylab, nie szepcz i nie dodawaj teatralnych westchnień. Krótkie zdania i sprawne tempo, bez zbędnego powtarzania.
 Jeśli są previous_context, to kontynuacja tej samej sprawy: wykorzystaj wcześniejsze ustalenia i nie przedstawiaj dawnych propozycji jako nowych zgód. recipient_name to imię odbiorcy, nie właściciela. Gdy potrzebujesz odpowiedzi Konrada, wywołaj ask_owner z konkretnym pytaniem i poczekaj; nie wymyślaj jego zgody. Wiadomości właściciela na czacie to bieżące wskazówki, ale zgodę na koszt/rezerwację nadal sprawdza check_offer.
 Opis sprawy i zakres upoważnienia: {json.dumps(case, ensure_ascii=False)}
@@ -109,7 +110,7 @@ Pending oznacza: brak zgody. Powiedz, że musisz uzyskać decyzję właściciela
 Nie płać, nie podawaj haseł, kodów ani danych płatniczych. Nie zawieraj kredytów, umów ubezpieczeniowych ani pełnomocnictw.
 Na odmowę rozmowy z AI uprzejmie zakończ. Jeżeli potrzebna jest klawiatura IVR, zapisz ograniczenie i zakończ.
 Zapisuj istotne ustalenia narzędziem save_note, rozróżniając propozycję od potwierdzonej rezerwacji.
-Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Po udzieleniu pełnej odpowiedzi możesz zapytać tylko „Czy mogę jeszcze w czymś pomóc?” i poczekać na odpowiedź rozmówcy. Nie dodawaj wstępu do tego pytania ani ponownego omówienia sprawy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Podsumowanie, wynik i następny krok zapisz wyłącznie narzędziem finish, bez odczytywania ich rozmówcy i bez zapowiadania tej czynności. Przez CAŁĄ rozmowę nie komentuj procesu prowadzenia ani kończenia rozmowy. Nie zapowiadaj podsumowania, domykania tematu, zamykania wątku ani zebrania czegoś w kilku słowach, również przed użyciem narzędzi. Zdanie „Dobrze, pozwól, że domknę ten temat w kilku słowach” oraz jego parafrazy są zabronione. Gdy sprawa jest załatwiona, nie powtarzaj odpowiedzi i nie dodawaj końcowego omówienia. Narzędzi save_note i finish używaj bez słownego wstępu. Po zakończeniu sprawy podziękuj za rozmowę i życz miłego dnia. Pożegnanie zostanie zlecone po wyniku narzędzia finish; nie wypowiadaj go wcześniej, żeby nie powtarzać go dwa razy. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
+Zanim użyjesz finish, wykonaj wszystkie możliwe punkty zakresu i wypowiedz merytoryczną odpowiedź. Sama zapowiedź, że coś wyjaśnisz, nie oznacza wykonania zadania. W podsumowaniu opisuj tylko to, co rzeczywiście zostało ustalone lub powiedziane. Po udzieleniu pełnej odpowiedzi możesz zapytać tylko „Czy mogę jeszcze w czymś pomóc?” i poczekać na odpowiedź rozmówcy. Nie dodawaj wstępu do tego pytania ani ponownego omówienia sprawy. Jeśli rozmówca ma dalsze pytanie, odpowiedz na nie; nie kończ. confirmed_by_caller=true tylko po jego rzeczywistym potwierdzeniu, nigdy na podstawie własnej oceny. Podsumowanie, wynik i następny krok zapisz wyłącznie narzędziem finish, bez odczytywania ich rozmówcy i bez zapowiadania tej czynności. ZASADA JĘZYKOWA OBOWIĄZUJĄCA W KAŻDEJ WYPOWIEDZI: Nie używaj słowa „domknąć”, żadnej jego odmiany ani wyrazów pochodnych (np. „domknę”, „domykam”, „domkniemy”, „domknięcie”). Nie używaj też zwrotów „zamknąć temat”, „zamknąć sprawę”, „zamknąć wątek” ani ich odmian. Zakaz obowiązuje również podczas dopytywania, wyjaśniania celu pytania, parafrazowania rozmówcy i korzystania z narzędzi. Nie powtarzaj tych słów nawet w cytacie. Zadawaj konkretne pytanie bez wyjaśniania, że służy kończeniu tematu. Przykład właściwego stylu: „Czy termin we wtorek pasuje?” — bez wstępu o kończeniu sprawy. Przez CAŁĄ rozmowę nie komentuj procesu prowadzenia ani kończenia rozmowy. Nie zapowiadaj podsumowania, domykania tematu, zamykania wątku ani zebrania czegoś w kilku słowach, również przed użyciem narzędzi. Zdanie „Dobrze, pozwól, że domknę ten temat w kilku słowach” oraz jego parafrazy są zabronione. Gdy sprawa jest załatwiona, nie powtarzaj odpowiedzi i nie dodawaj końcowego omówienia. Narzędzi save_note i finish używaj bez słownego wstępu. Po zakończeniu sprawy podziękuj za rozmowę i życz miłego dnia. Pożegnanie zostanie zlecone po wyniku narzędzia finish; nie wypowiadaj go wcześniej, żeby nie powtarzać go dwa razy. Nie deklaruj sukcesu bez potwierdzenia rozmówcy.'''
     string = {'type': 'string'}
     return {'type': 'session.update', 'session': {'type': 'realtime',
         'model': os.getenv('OPENAI_REALTIME_MODEL', 'gpt-realtime-2.1'),
@@ -179,7 +180,7 @@ async def media(ws: WebSocket, key: str):
                     await send({'type':'response.create','response':{'tool_choice':'none','instructions':FAREWELL_INSTRUCTION}})
                 elif state['completion_check']:
                     state['completion_check'] = False
-                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':session(case)['session']['instructions']+'\nTERAZ: Jeżeli ostatnie pytanie rozmówcy pozostało bez odpowiedzi, odpowiedz na nie wprost, bez zapowiedzi. Jeśli już odpowiedziałaś, nie powtarzaj odpowiedzi ani nie podsumowuj. Powiedz tylko „Czy mogę jeszcze w czymś pomóc?” i zaczekaj. Nie zapowiadaj domykania tematu, zamykania rozmowy ani podsumowania. Nie żegnaj się jeszcze.'}})
+                    await send({'type':'response.create','response':{'tool_choice':'none','instructions':session(case)['session']['instructions']+'\nTERAZ: Jeżeli ostatnie pytanie rozmówcy pozostało bez odpowiedzi, odpowiedz na nie wprost, bez zapowiedzi. Jeśli już odpowiedziałaś, nie powtarzaj odpowiedzi ani nie podsumowuj. Powiedz tylko „Czy mogę jeszcze w czymś pomóc?” i zaczekaj. Zadaj pytanie bez uzasadnienia i bez komentarza o kończeniu sprawy. Przestrzegaj wszystkich zakazów językowych z instrukcji głównej. Nie żegnaj się jeszcze.'}})
                 else:
                     await send({'type':'response.create'})
 
